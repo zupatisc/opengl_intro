@@ -13,6 +13,8 @@
 #include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <poll.h>
+#include <errno.h>
 
 #include <GL/glew.h>
 #define GLFW_DLL
@@ -27,12 +29,12 @@
 
 //#define INBUILD 1
 
-/* function declaration */
+/* function declarations */
 
 static int initgl();
 static char* openshader(const char* filename);
 void reload_shader_program(GLuint* program, const char* vertex_shader_filename, const char* fragment_shader_filename);
-bool watch_shader_program(const char* vertex_shader_filename, const char* fragment_shader_filename);
+void handle_events(int fd, int* wd, char* fragment_shader_filename);
 char* get_bin_dir();
 const char* make_path(const char* filename);
 bool restart_gl_log();
@@ -44,8 +46,15 @@ void log_gl_params();
 
 /* variables */
 GLFWwindow* window;
-unsigned int g_gl_width = 640, g_gl_height = 480; /* window width and height */
+unsigned int g_gl_width = 640, g_gl_height = 480;
 
+typedef struct watcher {
+	char buf;
+	int fd, poll_num;
+	int *wd;
+	nfds_t nfds;
+	struct pollfd fds[2];
+} watcher; 
 
 static int initgl() {
 
@@ -76,7 +85,6 @@ static int initgl() {
 		glfwTerminate();
 		return 1;
 	}
-	log_gl_params();
 	glfwMakeContextCurrent(window);
 
 	// Start GLEW extension handler
@@ -88,6 +96,8 @@ static int initgl() {
 	const GLubyte* version = glGetString(GL_VERSION);
 	printf("Renderer: %s\n", renderer);
 	printf("OpenGL version: %s\n", version);
+
+	log_gl_params();
 
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
@@ -160,6 +170,58 @@ void reload_shader_program(GLuint* program, const char* vertex_shader_filename, 
 	if( reloaded_program ) {
 		glDeleteProgram( *program );
 		*program = reloaded_program;
+	}
+}
+
+void handle_events(int fd, int* wd, char* fragment_shader_filename) { /* TODO: use pointer to struct */
+	char buf[4096];
+	const struct inotify_event *event;
+	ssize_t len;
+	char *ptr;
+
+	/* Loop while events can be read from inotify file descriptor. */
+
+	for(;;) {
+		/* Read some events. */
+		len = read(fd, buf, sizeof(buf));
+		if(len == -1 && errno != EAGAIN) {
+			gl_log_err("read");
+			exit(EXIT_FAILURE);
+		}
+
+		if(len <= 0)
+			break;
+
+		for(ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
+			
+			event = (const struct inotify_event *) ptr;
+
+			/* Print event type */
+			if(event->mask & IN_OPEN)
+				printf("IN_OPEN: ");
+			if(event->mask & IN_CLOSE_NOWRITE)
+				printf("IN_CLOSE_NOWRITE: ");
+			if(event->mask & IN_CLOSE_WRITE)
+				printf("IN_CLOSE_WRITE: ");
+
+			/* Print the name of the watched directory */
+			if(wd[0] == event->wd) {
+				printf("%s/", event->name);
+				//break;
+			}
+
+			/* Print the name of the file */
+			if(event->len)
+				printf("%s", event->name);
+
+			/* Print type of filesystem object */
+			if(event->mask & IN_ISDIR)
+				printf(" [directory]\n");
+			else
+				printf(" [file]\n");
+		}
+
+
 	}
 }
 
@@ -280,66 +342,94 @@ void glfw_window_size_callback(GLFWwindow* window, unsigned int width, unsigned 
 	g_gl_width = width;
 }
 
-// TODO: Doesn't output specs
 void log_gl_params() {
-	GLenum params[] = {
-		GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
-		GL_MAX_CUBE_MAP_TEXTURE_SIZE,
-		GL_MAX_DRAW_BUFFERS,
-		GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,
-		GL_MAX_TEXTURE_IMAGE_UNITS,
-		GL_MAX_TEXTURE_SIZE,
-		GL_MAX_VARYING_FLOATS,
-		GL_MAX_VERTEX_ATTRIBS,
-		GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,
-		GL_MAX_VERTEX_UNIFORM_COMPONENTS,
-		GL_MAX_VIEWPORT_DIMS,
-		GL_STEREO,
-	};
-	const char* names[] = {
-		"GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS",
-		"GL_MAX_CUBE_MAP_TEXTURE_SIZE",
-		"GL_MAX_DRAW_BUFFERS",
-		"GL_MAX_FRAGMENT_UNIFORM_COMPONENTS",
-		"GL_MAX_TEXTURE_IMAGE_UNITS",
-		"GL_MAX_TEXTURE_SIZE",
-		"GL_MAX_VARYING_FLOATS",
-		"GL_MAX_VERTEX_ATTRIBS",
-		"GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS",
-		"GL_MAX_VERTEX_UNIFORM_COMPONENTS",
-		"GL_MAX_VIEWPORT_DIMS",
-		"GL_STEREO",
-	};
+  GLenum params[] = {
+    GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+    GL_MAX_CUBE_MAP_TEXTURE_SIZE,
+    GL_MAX_DRAW_BUFFERS,
+    GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,
+    GL_MAX_TEXTURE_IMAGE_UNITS,
+    GL_MAX_TEXTURE_SIZE,
+    GL_MAX_VARYING_FLOATS,
+    GL_MAX_VERTEX_ATTRIBS,
+    GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+    GL_MAX_VERTEX_UNIFORM_COMPONENTS,
+    GL_MAX_VIEWPORT_DIMS,
+    GL_STEREO,
+  };
+  const char* names[] = {
+    "GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS",
+    "GL_MAX_CUBE_MAP_TEXTURE_SIZE",
+    "GL_MAX_DRAW_BUFFERS",
+    "GL_MAX_FRAGMENT_UNIFORM_COMPONENTS",
+    "GL_MAX_TEXTURE_IMAGE_UNITS",
+    "GL_MAX_TEXTURE_SIZE",
+    "GL_MAX_VARYING_FLOATS",
+    "GL_MAX_VERTEX_ATTRIBS",
+    "GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS",
+    "GL_MAX_VERTEX_UNIFORM_COMPONENTS",
+    "GL_MAX_VIEWPORT_DIMS",
+    "GL_STEREO",
+  };
+  gl_log("\nGL Context Params:\n");
+  
+  // integers - only works if the order is 0-10 integer return types
+  for (int i = 0; i < 10; i++) {
+    GLint v = 0;
+    glGetIntegerv(params[i], &v);
+    gl_log("%s %i\n", names[i], v);
+  }
 
-	gl_log("GL Context Params:\n");
-	for(int i = 0; i < 10; i++) {
-		int v = 0;
-		glGetIntegerv(params[i], &v);
-		gl_log("%s %i\n", names[i], v);
-	}
+  // others
+  GLint v[2];
+  v[0] = v[1] = 0;
+  glGetIntegerv(params[10], v);
+  gl_log("%s %i %i\n", names[10], v[0], v[1]);
 
-	int v[2];
-	v[0] = v[1] = 0;
-	glGetIntegerv(params[10], v);
-	gl_log("%s %i %i\n", names[10], v[0], v[1]);
-	unsigned char s = 0;
-	glGetBooleanv(params[11], &s);
-	gl_log("%s %u\n", names[11], (unsigned int)s);
-	gl_log("-----------------------------\n");
+  unsigned char s = 0;
+  glGetBooleanv(params[11], &s);
+  gl_log("%s %u\n", names[11], (unsigned int)s);
+  gl_log("-----------------------------\n");
 }
 
 int main(int argc, char *argv[]) { /* cmd args unused for now */
 
-	const char* tmpstr = get_bin_dir();
+	char* tmpstr = get_bin_dir();
 	fprintf(stdout, "%s\n", tmpstr);
+	free(tmpstr);
 
 	make_path("vertex_shader.glsl");
+
+	watcher fw;
+
+	fw.fd = inotify_init1(IN_NONBLOCK);
+	if(fw.fd == -1) {
+		gl_log("inotify_init1");
+		exit(EXIT_FAILURE);
+	}
+
+	fw.wd = calloc(1, sizeof(int));
+	fw.wd[0] = inotify_add_watch(fw.fd, get_bin_dir(), IN_CLOSE | IN_MODIFY);
+
+	if(fw.wd[0] == -1) {
+		gl_log_err("Cannot watch bin_dir");
+		exit(EXIT_FAILURE);
+	}
+
+	fw.nfds = 2;
+	/* Console input */
+	fw.fds[0].fd = STDIN_FILENO;
+	fw.fds[0].events = POLLIN;
+
+	/* Inotify input */
+	fw.fds[1].fd = fw.fd;
+	fw.fds[1].events = POLLIN;
+
 
 	if(initgl() != 0) {
 		return 1;
 	}
 
-	/* STUFF HERE NEXT */
 	float points[] = {
 		0.0f,  0.5f,  0.0f,
    		0.5f, 0.0f,  0.0f,
@@ -394,13 +484,13 @@ int main(int argc, char *argv[]) { /* cmd args unused for now */
 #ifndef INBUILD
 	GLuint shader_programme = glCreateProgram();
 	reload_shader_program(&shader_programme, "vertex_shader.glsl", "fragment_shader.glsl");
-	int fd = inotify_init();
+	/*int fd = inotify_init();
 	if( fd == -1 ) {
 		fprintf(stderr, "ERROR inotify_init() failed");
 		return 1;
-	}
-	int watch_vertex_shader = inotify_add_watch(fd, make_path("vertex_shader.glsl"), IN_MODIFY);
-	int watch_fragment_shader = inotify_add_watch(fd, make_path("fragment_shader.glsl"), IN_MODIFY);
+	}*/
+	//int watch_vertex_shader = inotify_add_watch(fd, make_path("vertex_shader.glsl"), IN_MODIFY);
+	//int watch_fragment_shader = inotify_add_watch(fd, make_path("fragment_shader.glsl"), IN_MODIFY);
 #endif
 
 	while(!glfwWindowShouldClose(window)) {
@@ -419,9 +509,17 @@ int main(int argc, char *argv[]) { /* cmd args unused for now */
 		if(GLFW_PRESS == glfwGetKey(window, GLFW_KEY_ESCAPE)) {
 			glfwSetWindowShouldClose(window, 1);
 		}
+
+		fw.poll_num = poll(fw.fds, fw.nfds, -1);
+		if(fw.poll_num > 0) {
+			if(fw.fds[1].revents & POLLIN) {
+				handle_events(fw.fd, fw.wd, get_bin_dir());
+			}
+		}
 	}
 
 	// close GL context and any other GLFW resources
 	glfwTerminate();
+	free(fw.wd);
 	return 0;
 }

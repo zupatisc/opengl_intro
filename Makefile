@@ -7,7 +7,7 @@ CXX = clang
 CXXFLAGS += -std=c11 -pedantic -Wall -Wno-deprecated-declarations -Os 
 LDFLAGS += -pedantic -Wall
 LDLIBS += -lGL -lglfw -lGLEW -lGLU
-EXECUTABLE_NAME = test
+EXECUTABLE_NAME = opengl_intro
 
 # Folders
 SRC = src
